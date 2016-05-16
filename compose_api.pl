@@ -1,12 +1,48 @@
 #!/usr/bin/env perl
 use Mojolicious::Lite;
 use File::Path qw/rmtree/;
+use Git::Class;
 
 helper instances => sub {
-  state $instances ||= {};
+	state $instances //= {};
 };
 
-get '/:stack' => sub {
+helper git => sub {
+	state $git //= Git::Class::Cmd->new;
+};
+
+#get '/:stack/git' => sub {
+#	my $c = shift;
+#	my $stack = $c->param("stack");
+#	my $static = Mojolicious::Static->new( paths => [ "./$stack/" ] );
+#
+#	$static->serve($c, "docker-compose.yml");
+#	$c->rendered;
+#};
+
+post '/:stack/git' => sub {
+	my $c = shift;
+	die "no git repo" unless $c->param("git");
+	my $repo	= $c->param("git");
+	my $stack	= $c->param("stack");
+	my $wd;
+	if(-f "./$stack") {
+		$wd = Git::Class::Worktree->new( path => "./$stack/" );
+		$wd->pull;
+	} else {
+		$wd = $c->git->clone($repo, $stack);
+	} 
+	$c->render(json => {ok => \1});
+};
+
+del '/:stack/git' => sub {
+	my $c = shift;
+	my $stack = $c->param("stack");
+	rmtree "./$stack";
+	$c->render(json => {ok => \1});
+};
+
+get '/:stack/file' => sub {
 	my $c = shift;
 	my $stack = $c->param("stack");
 	#$c->render("./$stack/docker-compose.yml");
@@ -16,7 +52,7 @@ get '/:stack' => sub {
 	$c->rendered;
 };
 
-post '/:stack' => sub {
+post '/:stack/file' => sub {
 	my $c = shift;
 	die "no file" unless $c->param("file");
 	my $stack = $c->param("stack");
@@ -25,7 +61,7 @@ post '/:stack' => sub {
 	$c->render(json => {ok => \1});
 };
 
-del '/:stack' => sub {
+del '/:stack/file' => sub {
 	my $c = shift;
 	my $stack = $c->param("stack");
 	rmtree "./$stack";
@@ -42,7 +78,7 @@ get '/:stack/run' => sub {
 post '/:stack/run' => sub {
 	my $c = shift;
 	my $stack = $c->param("stack");
-	my $ret = qx{cd ./$stack && docker-compose up -d 2>&1};
+	my $ret = qx{cd ./$stack && docker-compose up -d --build --remove-orphan 2>&1};
 	my $body = $c->req->json;
 	if(defined $body) {
                 my %tmp;

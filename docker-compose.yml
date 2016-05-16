@@ -5,13 +5,13 @@ services:
     volumes:
       - '/var/run/docker.sock:/var/run/docker.sock:ro'
     ports:
-      - 8080:3000
+      - 3000
     restart: always
     command: perl compose_api.pl daemon
   watcher:
     build: .
     ports:
-      - 8081:3000
+      - 3000
     restart: always
     command: perl watcher.pl daemon
     depends_on:
