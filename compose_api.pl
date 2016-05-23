@@ -2,6 +2,7 @@
 use Mojolicious::Lite;
 use File::Path qw/rmtree/;
 use Git::Class;
+use Mojo::JSON qw/from_json/;
 
 helper instances => sub {
 	state $instances //= {};
@@ -9,6 +10,22 @@ helper instances => sub {
 
 helper git => sub {
 	state $git //= Git::Class::Cmd->new;
+};
+
+helper get_scales => sub {
+	my $c		= shift;
+	my $stack	= shift;
+	my %services;
+	open my $IDS, "cd $stack && docker-compose ps -q |" || die $!;
+	my $ids = join " ", map {chomp; $_} <$IDS>;
+	return %services unless $ids;
+	$c->app->log->debug("IDS: $ids");
+	open my $INSPECT, qq{docker inspect $ids|} || die $!;
+	for my $data(@{ from_json(join "", <$INSPECT>) }) {
+		next unless $data->{State}{Running};
+		$services{$1}++ if $data->{Name} =~ /^\/\w+?_(\w+?)_\d+$/
+	}
+	%services
 };
 
 #get '/:stack/git' => sub {
@@ -71,41 +88,43 @@ del '/:stack/file' => sub {
 get '/:stack/run' => sub {
 	my $c = shift;
 	my $stack = $c->param("stack");
-	my $ret = qx{cd ./$stack && docker-compose ps};
-	$c->render(text => $ret);
+	system "cd ./$stack && docker-compose ps" || die $!;
+	$c->render(json => {$c->get_scales($stack)});
 };
 
 post '/:stack/run' => sub {
-	my $c = shift;
-	my $stack = $c->param("stack");
-	my $ret = qx{cd ./$stack && docker-compose up -d --build --remove-orphan 2>&1};
-	my $body = $c->req->json;
+	my $c		= shift;
+	my $stack	= $c->param("stack");
+	my $body	= $c->req->json;
+	system "cd ./$stack && docker-compose up -d --build --remove-orphan 2>&1" || die $!;
 	if(defined $body) {
                 my %tmp;
-                my @keys    = keys %$body;
-                my $scales = join " ", map {
-                  my $instances = $body->{$_};
-                  if($instances =~  /^\+(\d+)$/) {
-                    $c->instances->{$_} = $instances = ($c->instances->{$_} // 1) + $1;
-                  } elsif($instances =~  /^-(\d+)$/) {
-                    $c->instances->{$_} = $instances = ($c->instances->{$_} // 1) - $1;
-                  } elsif($instances =~  /^\*(\d+)$/) {
-                    $c->instances->{$_} = $instances = ($c->instances->{$_} // 1) * $1;
-                  } elsif($instances =~  /^\/(\d+)$/) {
-                    $c->instances->{$_} = $instances = ($c->instances->{$_} // 1) / $1;
-                  }
-                  "$_=$instances"
+                my @keys	= keys %$body;
+		my %scale	= $c->get_scales($stack);
+                my $scales	= join " ", map {
+			my $instances	= $body->{$_};
+			if($instances =~  /^\+(\d+)$/) {
+				$instances = $scale{$_} + $1;
+			} elsif($instances =~  /^-(\d+)$/) {
+				$instances = $scale{$_} - $1;
+			} elsif($instances =~  /^\*(\d+)$/) {
+				$instances = $scale{$_} * $1;
+			} elsif($instances =~  /^\/(\d+)$/) {
+				$instances = $scale{$_} / $1;
+			}
+			$instances = 0 if $instances < 0;
+			"$_=$instances"
                 } keys %$body;
-		my $ret .= qx{cd ./$stack && docker-compose scale $scales 2>&1};
+		system "cd ./$stack && docker-compose scale $scales 2>&1" || die $!;
 	}
-	$c->render(json => $ret);
+	$c->render(json => {$c->get_scales($stack)});
 };
 
 del '/:stack/run' => sub {
 	my $c = shift;
 	my $stack = $c->param("stack");
-	my $ret = qx{cd ./$stack && docker-compose down 2>&1};
-	$c->render(json => $ret);
+	system "cd ./$stack && docker-compose down --force 2>&1" || die $!;
+	$c->render(json => {$c->get_scales($stack)});
 };
 
 app->start;
