@@ -3,6 +3,7 @@ use Mojolicious::Lite;
 use File::Path qw/rmtree/;
 use Git::Class;
 use Mojo::JSON qw/from_json/;
+use YAML;
 
 helper instances => sub {
 	state $instances //= {};
@@ -75,6 +76,16 @@ post '/:stack/file' => sub {
 	my $stack = $c->param("stack");
 	mkdir "./$stack";
 	$c->param("file")->move_to("./$stack/docker-compose.yml");
+	$c->render(json => {ok => \1});
+};
+
+post '/:stack' => sub {
+	my $c = shift;
+	#die "no data" unless $c->res->json;
+	my $stack = $c->param("stack");
+	mkdir "./$stack";
+	open my $FILE, ">", "./$stack/docker-compose.yml";
+	print {$FILE} Dump($c->res->json);
 	$c->render(json => {ok => \1});
 };
 

@@ -51,10 +51,20 @@ post "/:stack" => sub {
 	my $data = $c->separe_file($file);
 	$c->app->log->debug($c->app->dumper($data));
 	my $col = $c->db->get_collection("stacks");
-	eval {$col->insert_one({ _id	=> $stack, %$data }) };
-	$col->update_one( {"_id" => $stack}, {'$set' => $data}) if $@;
-
-	$c->render(json => {ok => \1});
+	eval {$col->insert_one({ _id => $stack, %$data }) };
+	$col->update_one( {_id => $stack}, {'$set' => $data}) if $@;
+	$c->ua->post("http://composeapi:3000/$stack" => json => $data->{compose} => sub {
+		my $ua	= shift;
+		my $tx	= shift;
+		if($tx->error or !$tx->res->json->{ok}) {
+			$c->app->log->error($tx->error->{message});
+			$c->render(json => {ok => \0, error => $tx->error->{message}}, status => 500);
+			return
+		}
+		$c->app->log->debug($c->app->dumper($tx->res->json));
+		$c->render(json => {ok => \1});
+	});
+	$c->render_later
 };
 
 app->start;

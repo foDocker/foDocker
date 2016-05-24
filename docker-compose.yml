@@ -16,5 +16,6 @@ services:
     command: perl watcher.pl daemon
     depends_on:
       - composeapi
+      - mongo
   mongo:
     image: mongo
