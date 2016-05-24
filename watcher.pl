@@ -2,80 +2,61 @@
 use Mojolicious::Lite;
 use Mojo::JSON qw/from_json/;
 use Mojo::UserAgent;
-
-helper "endpoints" => sub {
-  state $endpoints ||= {};
-};
-
-helper "scripts" => sub {
-  state $scripts ||= {};
-};
-
-helper create_endpoint => sub {
-  my $c     = shift;
-  my $name  = shift;
-  my $data  = shift;
-
-
-  $c->endpoints->{$name} = $data;
-  $c->app->log->info("create_endpoint: ", $c->dumper($c->endpoints));
-};
+use MongoDB;
+use YAML;
 
 helper ua => sub {
-      state $ua ||= Mojo::UserAgent->new;
+	state $ua ||= Mojo::UserAgent->new;
 };
 
-helper create_script => sub {
-  my $c     = shift;
-  my $name  = shift;
-  my $data  = shift;
-
-  $c->scripts->{$name} = $data;
-  Mojo::IOLoop->recurring(10 => sub {
-    my $ret = qx|$data->{code}|;
-    if($ret) {
-      my $scale = from_json $ret;
-      $c->ua->post("http://composeapi/$data->{service}/run" => json => $scale)
-    }
-  });
+helper mongo => sub {
+	state $mongo ||= MongoDB->connect('mongodb://mongo')
 };
 
-get "/inform/:rule/:value" => sub {
-  my $c     = shift;
-  my $stack = $c->param("rule");
-  my $value = $c->param("value");
-
-  my $rule = $c->endpoints($stack)->{$stack};
-  $c->app->log->info("_______endpoint: ", $c->dumper($c->endpoints));
-
-  $c->app->log->info("value: $value", "rule: ", $c->app->dumper($rule), "endpoints: ", $c->dumper($c->endpoints($rule)));
-  if(exists $rule->{$value}) {
-      my $data = $rule->{$value};
-      $c->app->log->info("scalling: ", $c->dumper($data->{scale}));
-      my $res = $c->ua->post("http://composeapi:3000/$stack/run" => json => $data->{scale})->res;
-      if($res->error) {
-        $c->app->log->error($res->error->{message});
-      } else {
-        $c->app->log->info("OK");
-      }
-  } else {
-    $c->app->log->info("nao existe");
-  }
-  $c->render(json => {ok => \1})
+helper db => sub {
+	my $c		= shift;
+	state $db	||= $c->app->mongo->get_database("watcher");
 };
 
-post "/rule/:rule" => sub {
-  my $c     = shift;
-  my $name  = $c->param("rule");
-  my $rule  = $c->req->json;
-  $c->app->log->info($c->app->dumper($rule));
+helper separe_file => sub {
+	my $c		= shift;
+	my $file	= Load(shift);
 
-  if($rule->{type} eq "ENDPOINT") {
-    $c->create_endpoint($name, $rule);
-  } elsif($rule->{type} eq "SCRIPT") {
-    $c->create_script($name, $rule);
-  }
-  $c->render(json => {ok => \1})
+	my %scale;
+	$c->app->log->debug($c->app->dumper($file));
+	if(exists $file->{services}) {
+		for my $service(keys %{ $file->{services} }) {
+			next unless exists $file->{services}{$service}{scaling};
+			$scale{$service} = delete $file->{services}{$service}{scaling};
+			$scale{$service}{min} = 0 unless exists $scale{$service}{min};
+			$scale{$service}{initial} = $scale{$service}{min}
+				if exists $scale{$service}{min}
+					and (
+						not exists $scale{$service}{initial}
+						or $scale{$service}{initial} < $scale{$service}{min}
+					)
+			;
+		}
+	}
+
+	{compose => $file, scale => \%scale}
+};
+
+post "/:stack" => sub {
+	my $c	= shift;
+	die "no file" unless $c->param("file");
+	my $stack = $c->param("stack");
+	my $filename = "/tmp/$stack-$$-" . time . "-" . rand(10000) . ".yml";
+	my $file = $c->param("file")->slurp;
+	my $data = $c->separe_file($file);
+	$c->app->log->debug($c->app->dumper($data));
+	my $col = $c->db->get_collection("stacks");
+	$col->insert_one({
+		stack	=> $stack,
+		%$data
+	});
+
+	$c->render(json => {ok => \1});
 };
 
 app->start;
