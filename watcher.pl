@@ -51,10 +51,8 @@ post "/:stack" => sub {
 	my $data = $c->separe_file($file);
 	$c->app->log->debug($c->app->dumper($data));
 	my $col = $c->db->get_collection("stacks");
-	$col->insert_one({
-		stack	=> $stack,
-		%$data
-	});
+	eval {$col->insert_one({ _id	=> $stack, %$data }) };
+	$col->update_one( {"_id" => $stack}, {'$set' => $data}) if $@;
 
 	$c->render(json => {ok => \1});
 };
