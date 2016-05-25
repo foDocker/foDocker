@@ -150,9 +150,9 @@ helper fix_instances => sub {
 		my $max		= $c->max_scale($stack);
 
 		for my $serv(keys %$actual) {
-			if($actual->{$serv} < $min->{$serv}) {
+			if(exists $min->{$serv} and $actual->{$serv} < $min->{$serv}) {
 				$scale->{$serv} = $min->{$serv};
-			} elsif($actual->{$serv} > $max->{$serv}) {
+			} elsif(exists $max->{$serv} and $actual->{$serv} > $max->{$serv}) {
 				$scale->{$serv} = $max->{$serv};
 			}
 		}
