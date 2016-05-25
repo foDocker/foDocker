@@ -22,7 +22,7 @@ helper separe_file => sub {
 	my $c		= shift;
 	my $file	= Load(shift);
 
-	my %scale;
+	my(%scale, %alerts);
 	$c->app->log->debug($c->app->dumper($file));
 	if(exists $file->{services}) {
 		for my $service(keys %{ $file->{services} }) {
@@ -38,8 +38,11 @@ helper separe_file => sub {
 			;
 		}
 	}
+	if(exists $file->{alerts}) {
+		%alerts = %{ delete $file->{alerts} }
+	}
 
-	{compose => $file, scale => \%scale}
+	{compose => $file, scale => \%scale, alerts => \%alerts}
 };
 
 helper get_stack_data => sub {

@@ -114,7 +114,7 @@ post '/:stack/run' => sub {
 	my $stack	= $c->param("stack");
 	$c->app->log->debug("body:", $c->req->body);
 	my $body	= $c->req->json;
-	system "cd ./$stack && docker-compose up -d --build --remove-orphan 2>&1" || die $!;
+	system "cd ./$stack && docker-compose up -d --build --remove-orphan --no-recreate 2>&1" || die $!;
 	if(defined $body) {
 		$c->app->log->debug("body:", $c->app->dumper($body));
                 my %tmp;
@@ -142,7 +142,7 @@ post '/:stack/run' => sub {
 del '/:stack/run' => sub {
 	my $c = shift;
 	my $stack = $c->param("stack");
-	system "cd ./$stack && docker-compose down --force 2>&1" || die $!;
+	system "cd ./$stack && docker-compose down --remove-orphan --force 2>&1" || die $!;
 	$c->render(json => {$c->get_scales($stack)});
 };
 

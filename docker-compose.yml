@@ -19,3 +19,5 @@ services:
       - mongo
   mongo:
     image: mongo
+  influxdb:
+    image: influxdb
