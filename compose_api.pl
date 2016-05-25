@@ -82,10 +82,16 @@ post '/:stack/file' => sub {
 post '/:stack' => sub {
 	my $c = shift;
 	#die "no data" unless $c->res->json;
+	$c->app->log->debug("body:", $c->req->body);
 	my $stack = $c->param("stack");
 	mkdir "./$stack";
 	open my $FILE, ">", "./$stack/docker-compose.yml";
-	print {$FILE} Dump($c->res->json);
+	my $json = $c->req->json;
+	$c->app->log->debug("body json:", $c->app->dumper($json));
+	my $yaml = Dump($json);
+	$yaml =~ s/^version:\s*(\d+)\s*$/version: '$1'/m;
+	$c->app->log->debug("body yaml:", $yaml);
+	print {$FILE} $yaml;
 	$c->render(json => {ok => \1});
 };
 
@@ -106,9 +112,11 @@ get '/:stack/run' => sub {
 post '/:stack/run' => sub {
 	my $c		= shift;
 	my $stack	= $c->param("stack");
+	$c->app->log->debug("body:", $c->req->body);
 	my $body	= $c->req->json;
 	system "cd ./$stack && docker-compose up -d --build --remove-orphan 2>&1" || die $!;
 	if(defined $body) {
+		$c->app->log->debug("body:", $c->app->dumper($body));
                 my %tmp;
                 my @keys	= keys %$body;
 		my %scale	= $c->get_scales($stack);

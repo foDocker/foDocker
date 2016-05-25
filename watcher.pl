@@ -42,6 +42,85 @@ helper separe_file => sub {
 	{compose => $file, scale => \%scale}
 };
 
+helper get_stack_data => sub {
+	my $c		= shift;
+	my $stack	= shift;
+	my $col		= $c->db->get_collection("stacks");
+	my($data)	= $col->find({_id => $stack})->all;
+	$c->app->log->debug("stack data:", $c->app->dumper($data));
+	$data
+};
+
+helper get_scale_data => sub {
+	my $c		= shift;
+	my $stack	= shift;
+	my $col		= $c->db->get_collection("stacks");
+	my $scale	= $c->get_stack_data($stack)->{scale};
+	$c->app->log->debug("scale:", $c->app->dumper($scale));
+	$scale
+};
+
+helper get_compose_data => sub {
+	my $c		= shift;
+	my $stack	= shift;
+	my $col		= $c->db->get_collection("stacks");
+	my $compose	= $c->get_stack_data($stack)->{compose};
+	$c->app->log->debug("compose:", $c->app->dumper($compose));
+	$compose
+};
+
+helper create_stack => sub {
+	my $c		= shift;
+	my $stack	= shift;
+	my $cb		= shift;
+
+	my $compose = $c->get_compose_data($stack);
+	$c->app->log->debug("compose yml:", $c->app->dumper($compose));
+	$c->ua->post("http://composeapi:3000/$stack" => json => $compose => sub {
+		my $ua	= shift;
+		my $tx	= shift;
+		if($tx->error or !$tx->res->json->{ok}) {
+			$c->app->log->error($tx->error->{message});
+			$c->render(json => {ok => \0, error => $tx->error->{message}}, status => 500);
+			return
+		}
+		$c->app->log->debug($c->app->dumper($tx->res->json));
+		$cb->($tx->res->json);
+	});
+};
+
+helper run_stack => sub {
+	my $c		= shift;
+	$c->app->log->debug("run_stack(@_)");
+	my $stack	= shift;
+	my $cb		= pop;
+	my $scale	= shift // $c->initial_scale($stack);
+
+	$c->app->log->debug("run scale:", $c->app->dumper($scale));
+	$c->ua->post("http://composeapi:3000/$stack/run" => json => $scale => sub {
+		my $ua	= shift;
+		my $tx	= shift;
+		if($tx->error) {
+			$c->app->log->error($tx->error->{message});
+			$c->render(json => {ok => \0, error => $tx->error->{message}}, status => 500);
+			return
+		}
+		$c->app->log->debug($c->app->dumper($tx->res->json));
+		$cb->($tx->res->json);
+	});
+};
+
+helper initial_scale => sub {
+	my $c		= shift;
+	my $stack	= shift;
+	my $col		= $c->db->get_collection("stacks");
+	my $scale	= $c->get_scale_data($stack);
+
+	my %initial = map {($_ => $scale->{$_}{initial})} keys %$scale;
+	$c->app->log->debug("initail:", $c->app->dumper(\%initial));
+	\%initial
+};
+
 post "/:stack" => sub {
 	my $c	= shift;
 	die "no file" unless $c->param("file");
@@ -53,16 +132,11 @@ post "/:stack" => sub {
 	my $col = $c->db->get_collection("stacks");
 	eval {$col->insert_one({ _id => $stack, %$data }) };
 	$col->update_one( {_id => $stack}, {'$set' => $data}) if $@;
-	$c->ua->post("http://composeapi:3000/$stack" => json => $data->{compose} => sub {
-		my $ua	= shift;
-		my $tx	= shift;
-		if($tx->error or !$tx->res->json->{ok}) {
-			$c->app->log->error($tx->error->{message});
-			$c->render(json => {ok => \0, error => $tx->error->{message}}, status => 500);
-			return
-		}
-		$c->app->log->debug($c->app->dumper($tx->res->json));
-		$c->render(json => {ok => \1});
+	$c->create_stack($stack => sub {
+		$c->run_stack($stack => sub {
+			my $scales = shift;
+			$c->render(json => {ok => \1, scales => $scales});
+		});
 	});
 	$c->render_later
 };
