@@ -51,12 +51,23 @@ helper get_stack_data => sub {
 	$data
 };
 
+helper scale_data_cache => sub {
+	state $cache ||= {};
+};
+
 helper get_scale_data => sub {
 	my $c		= shift;
 	my $stack	= shift;
+	if(exists $c->scale_data_cache->{$stack}) {
+		return $c->scale_data_cache->{$stack}->{data}
+	}
 	my $col		= $c->db->get_collection("stacks");
 	my $scale	= $c->get_stack_data($stack)->{scale};
 	$c->app->log->debug("scale:", $c->app->dumper($scale));
+	$c->scale_data_cache->{$stack}->{data} = $scale;
+	$c->scale_data_cache->{$stack}->{timer} = Mojo::IOLoop->timer(sub {
+		delete $c->scale_data_cache->{$stack};
+	});
 	$scale
 };
 
@@ -102,12 +113,50 @@ helper run_stack => sub {
 		my $tx	= shift;
 		if($tx->error) {
 			$c->app->log->error($tx->error->{message});
-			$c->render(json => {ok => \0, error => $tx->error->{message}}, status => 500);
-			return
+			die $tx->error->{message}
 		}
 		$c->app->log->debug($c->app->dumper($tx->res->json));
 		$cb->($tx->res->json);
 	});
+};
+
+helper get_stack_scale => sub {
+	my $c		= shift;
+	my $stack	= shift;
+	my $cb		= shift;
+
+	$c->ua->get("http://composeapi:3000/$stack/run" => sub {
+		my $ua	= shift;
+		my $tx	= shift;
+		if($tx->error) {
+			$c->app->log->error($tx->error->{message});
+			die $tx->error->{message}
+		}
+		$c->app->log->debug($c->app->dumper($tx->res->json));
+		$cb->($tx->res->json);
+	});
+};
+
+helper max_scale => sub {
+	my $c		= shift;
+	my $stack	= shift;
+	my $col		= $c->db->get_collection("stacks");
+	my $scale	= $c->get_scale_data($stack);
+
+	my %max = map {($_ => $scale->{$_}{max})} keys %$scale;
+	$c->app->log->debug("max:", $c->app->dumper(\%max));
+	\%max
+};
+
+helper minimal_scale => sub {
+	my $c		= shift;
+	my $stack	= shift;
+	my $col		= $c->db->get_collection("stacks");
+	my $scale	= $c->get_scale_data($stack);
+
+	my %min = map {($_ => $scale->{$_}{min})} keys %$scale;
+	$c->app->log->debug("minimal:", $c->app->dumper(\%min));
+	\%min
 };
 
 helper initial_scale => sub {
@@ -131,7 +180,7 @@ post "/:stack" => sub {
 	$c->app->log->debug($c->app->dumper($data));
 	my $col = $c->db->get_collection("stacks");
 	eval {$col->insert_one({ _id => $stack, %$data }) };
-	$col->update_one( {_id => $stack}, {'$set' => $data}) if $@;
+	$col->update_one({ _id => $stack}, {'$set' => $data}) if $@;
 	$c->create_stack($stack => sub {
 		$c->run_stack($stack => sub {
 			my $scales = shift;
