@@ -51,6 +51,10 @@ helper get_stack_data => sub {
 	$data
 };
 
+helper timers => sub {
+	state $timers ||= {};
+};
+
 helper scale_data_cache => sub {
 	state $cache ||= {};
 };
@@ -105,7 +109,17 @@ helper run_stack => sub {
 	$c->app->log->debug("run_stack(@_)");
 	my $stack	= shift;
 	my $cb		= pop;
-	my $scale	= shift // $c->initial_scale($stack);
+	my $scale;
+	if(ref $cb eq "CODE") {
+		$scale	= shift // $c->initial_scale($stack);
+	} else {
+		$scale = $cb;
+		undef $cb
+	}
+
+	if(exists $c->timers->{$stack}) {
+		Mojo::IOLoop->remove($c->timers->{$stack})
+	}
 
 	$c->app->log->debug("run scale:", $c->app->dumper($scale));
 	$c->ua->post("http://composeapi:3000/$stack/run" => json => $scale => sub {
@@ -115,8 +129,35 @@ helper run_stack => sub {
 			$c->app->log->error($tx->error->{message});
 			die $tx->error->{message}
 		}
+
+		$c->timers->{$stack} = Mojo::IOLoop->recurring(15 => sub {
+			$c->fix_instances($stack);
+		});
+
 		$c->app->log->debug($c->app->dumper($tx->res->json));
-		$cb->($tx->res->json);
+		$cb->($tx->res->json) if $cb
+	});
+};
+
+helper fix_instances => sub {
+	my $c		= shift;
+	my $stack	= shift;
+	my $scale	= {};
+
+	$c->get_stack_scale($stack => sub {
+		my $actual	= shift;
+		my $min		= $c->min_scale($stack);
+		my $max		= $c->max_scale($stack);
+
+		for my $serv(keys %$actual) {
+			if($actual->{$serv} < $min->{$serv}) {
+				$scale->{$serv} = $min->{$serv};
+			} elsif($actual->{$serv} > $max->{$serv}) {
+				$scale->{$serv} = $max->{$serv};
+			}
+		}
+
+		$c->run_stack($stack => $scale);
 	});
 };
 
@@ -133,7 +174,7 @@ helper get_stack_scale => sub {
 			die $tx->error->{message}
 		}
 		$c->app->log->debug($c->app->dumper($tx->res->json));
-		$cb->($tx->res->json);
+		$cb->($tx->res->json) if $cb
 	});
 };
 
@@ -148,14 +189,14 @@ helper max_scale => sub {
 	\%max
 };
 
-helper minimal_scale => sub {
+helper min_scale => sub {
 	my $c		= shift;
 	my $stack	= shift;
 	my $col		= $c->db->get_collection("stacks");
 	my $scale	= $c->get_scale_data($stack);
 
 	my %min = map {($_ => $scale->{$_}{min})} keys %$scale;
-	$c->app->log->debug("minimal:", $c->app->dumper(\%min));
+	$c->app->log->debug("min:", $c->app->dumper(\%min));
 	\%min
 };
 
