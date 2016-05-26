@@ -22,7 +22,7 @@ helper separe_file => sub {
 	my $c		= shift;
 	my $file	= Load(shift);
 
-	my(%scale, %alerts);
+	my(%scale, %alerts, %metrics);
 	$c->app->log->debug($c->app->dumper($file));
 	if(exists $file->{services}) {
 		for my $service(keys %{ $file->{services} }) {
@@ -41,8 +41,12 @@ helper separe_file => sub {
 	if(exists $file->{alerts}) {
 		%alerts = %{ delete $file->{alerts} }
 	}
+	if(exists $file->{metrics}) {
+		my $metrics = delete $file->{metrics};
+		%metrics = ref $metrics eq "ARRAY" ? map {($_ => 1)} @$metrics : %$metrics
+	}
 
-	{compose => $file, scale => \%scale, alerts => \%alerts}
+	{compose => $file, scale => \%scale, alerts => \%alerts, metrics => \%metrics}
 };
 
 helper get_stack_data => sub {
@@ -99,11 +103,31 @@ helper create_stack => sub {
 		my $tx	= shift;
 		if($tx->error or !$tx->res->json->{ok}) {
 			$c->app->log->error($tx->error->{message});
-			$c->render(json => {ok => \0, error => $tx->error->{message}}, status => 500);
-			return
+			die  $tx->error->{message}
 		}
 		$c->app->log->debug($c->app->dumper($tx->res->json));
 		$cb->($tx->res->json);
+	});
+};
+
+helper del_stack => sub {
+	my $c		= shift;
+	my $stack	= shift;
+	my $cb		= shift;
+
+	my $compose = $c->get_compose_data($stack);
+	$c->app->log->debug("compose yml:", $c->app->dumper($compose));
+	$c->ua->delete("http://composeapi:3000/$stack/run" => sub {
+		$c->ua->delete("http://composeapi:3000/$stack/file" => sub {
+			my $ua	= shift;
+			my $tx	= shift;
+			if($tx->error or !$tx->res->json->{ok}) {
+				$c->app->log->error($tx->error->{message});
+				die $tx->error->{message}
+			}
+			$c->app->log->debug($c->app->dumper($tx->res->json));
+			$cb->($tx->res->json);
+		});
 	});
 };
 
@@ -218,7 +242,6 @@ post "/:stack" => sub {
 	my $c	= shift;
 	die "no file" unless $c->param("file");
 	my $stack = $c->param("stack");
-	my $filename = "/tmp/$stack-$$-" . time . "-" . rand(10000) . ".yml";
 	my $file = $c->param("file")->slurp;
 	my $data = $c->separe_file($file);
 	$c->app->log->debug($c->app->dumper($data));
@@ -230,6 +253,26 @@ post "/:stack" => sub {
 			my $scales = shift;
 			$c->render(json => {ok => \1, scales => $scales});
 		});
+	});
+	$c->render_later
+};
+
+get "/:stack" => sub {
+	my $c	= shift;
+	my $stack = $c->param("stack");
+	my $col = $c->db->get_collection("stacks");
+	my ($conf) = $col->find({ _id => $stack })->all;
+	$c->render(json => $conf)
+};
+
+del "/:stack" => sub {
+	my $c	= shift;
+	my $stack = $c->param("stack");
+	$c->del_stack($stack => sub {
+		Mojo::IOLoop->remove($c->timers->{$stack});
+		my $col = $c->db->get_collection("stacks");
+		my ($conf) = $col->delete_many({ _id => $stack });
+		$c->render(json => $conf->deleted_count)
 	});
 	$c->render_later
 };
