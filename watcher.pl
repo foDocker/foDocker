@@ -1,6 +1,7 @@
 #!/usr/bin/env perl
 use Mojolicious::Lite;
 use Mojo::JSON qw/from_json/;
+use Mojo::EventEmitter;
 use Mojo::UserAgent;
 use MongoDB;
 use YAML;
@@ -49,46 +50,38 @@ helper separe_file => sub {
 	{compose => $file, scale => \%scale, alerts => \%alerts, metrics => \%metrics}
 };
 
-helper get_stack_data => sub {
-	my $c		= shift;
-	my $stack	= shift;
-	my $col		= $c->db->get_collection("stacks");
-	my($data)	= $col->find({_id => $stack})->all;
-	$c->app->log->debug("stack data:", $c->app->dumper($data));
-	$data
-};
-
 helper timers => sub {
 	state $timers ||= {};
 };
 
-helper scale_data_cache => sub {
+helper stack_data_cache => sub {
 	state $cache ||= {};
 };
 
-helper get_scale_data => sub {
+helper get_stack_data => sub {
 	my $c		= shift;
 	my $stack	= shift;
-	if(exists $c->scale_data_cache->{$stack}) {
-		return $c->scale_data_cache->{$stack}->{data}
+	if(exists $c->stack_data_cache->{$stack}) {
+		return $c->stack_data_cache->{$stack}->{data}
 	}
 	my $col		= $c->db->get_collection("stacks");
-	my $scale	= $c->get_stack_data($stack)->{scale};
-	$c->app->log->debug("scale:", $c->app->dumper($scale));
-	$c->scale_data_cache->{$stack}->{data} = $scale;
-	$c->scale_data_cache->{$stack}->{timer} = Mojo::IOLoop->timer(sub {
-		delete $c->scale_data_cache->{$stack};
+	my($data)	= $col->find({_id => $stack})->all;
+	$c->app->log->debug("stack data:", $c->app->dumper($data));
+	$c->stack_data_cache->{$stack}->{data}	= $data;
+	$c->stack_data_cache->{$stack}->{timer}	= Mojo::IOLoop->timer(sub {
+		delete $c->stack_data_cache->{$stack};
 	});
-	$scale
+	$data
 };
 
-helper get_compose_data => sub {
+helper get_data => sub {
 	my $c		= shift;
 	my $stack	= shift;
+	my $type	= shift;
 	my $col		= $c->db->get_collection("stacks");
-	my $compose	= $c->get_stack_data($stack)->{compose};
-	$c->app->log->debug("compose:", $c->app->dumper($compose));
-	$compose
+	my $data	= $c->get_stack_data($stack)->{$type};
+	$c->app->log->debug("$type:", $c->app->dumper($data));
+	$data
 };
 
 helper create_stack => sub {
@@ -96,7 +89,7 @@ helper create_stack => sub {
 	my $stack	= shift;
 	my $cb		= shift;
 
-	my $compose = $c->get_compose_data($stack);
+	my $compose = $c->get_data($stack, "compose");
 	$c->app->log->debug("compose yml:", $c->app->dumper($compose));
 	$c->ua->post("http://composeapi:3000/$stack" => json => $compose => sub {
 		my $ua	= shift;
@@ -115,8 +108,15 @@ helper del_stack => sub {
 	my $stack	= shift;
 	my $cb		= shift;
 
-	my $compose = $c->get_compose_data($stack);
+	my $compose = $c->get_data($stack, "compose");
 	$c->app->log->debug("compose yml:", $c->app->dumper($compose));
+	my $metrics = $c->get_data($stack, "metrics");
+	if($metrics) {
+		for my $metric(keys %$metrics) {
+			Mojo::IOLoop->remove($c->timers->{metric}{$stack}{$metric});
+		}
+		delete $c->timers->{metric}{$stack};
+	}
 	$c->ua->delete("http://composeapi:3000/$stack/run" => sub {
 		$c->ua->delete("http://composeapi:3000/$stack/file" => sub {
 			my $ua	= shift;
@@ -128,6 +128,29 @@ helper del_stack => sub {
 			$c->app->log->debug($c->app->dumper($tx->res->json));
 			$cb->($tx->res->json);
 		});
+	});
+};
+
+helper ee => sub{
+	state $ee ||= Mojo::EventEmitter->new
+};
+
+helper influxdb_query => sub {
+	my $c		= shift;
+	my $query	= shift;
+	my $cb		= shift;
+	$c->ua->get("http://influxdb:8086/query" => form => {db => "metrics", q => $query} => sub {
+		$c->app->log->debug("response from influxdb");
+		my $ua	= shift;
+		my $tx	= shift;
+
+		if(my $res = $tx->success) {
+			$c->app->log->debug("response from influxdb:", $c->app->dumper($res->json("//values")));
+			$cb->($res->json("//values"))
+		} else {
+			$c->app->log->error("response from influxdb:", $tx->error->{message});
+			die $tx->error->{message}
+		}
 	});
 };
 
@@ -144,8 +167,8 @@ helper run_stack => sub {
 		undef $cb
 	}
 
-	if(exists $c->timers->{$stack}) {
-		Mojo::IOLoop->remove($c->timers->{$stack})
+	if(exists $c->timers->{stack}{$stack}) {
+		Mojo::IOLoop->remove($c->timers->{stack}{$stack})
 	}
 
 	$c->app->log->debug("run scale:", $c->app->dumper($scale));
@@ -157,12 +180,59 @@ helper run_stack => sub {
 			die $tx->error->{message}
 		}
 
-		$c->timers->{$stack} = Mojo::IOLoop->recurring(15 => sub {
+		$c->timers->{stack}{$stack} = Mojo::IOLoop->recurring(15 => sub {
 			$c->fix_instances($stack);
 		});
 
+		my $metrics = $c->get_data($stack, "metrics");
+		if($metrics) {
+			for my $metric(keys %$metrics) {
+				$c->recurring_metric($stack, $metric, $metrics->{$metric})
+			}
+		}
+
+		my $alerts = $c->get_data($stack, "alerts");
+		if($alerts) {
+			for my $alert(keys %$alerts) {
+				$c->app->log->debug("alert: $alert");
+			}
+		}
+
 		$c->app->log->debug($c->app->dumper($tx->res->json));
 		$cb->($tx->res->json) if $cb
+	});
+};
+
+helper recurring_metric => sub {
+	my $c		= shift;
+	my $stack	= shift;
+	my $metric	= shift;
+	my $conf	= shift;
+
+	$c->app->log->debug("recurring_metric $stack, $metric: $conf");
+
+	if(exists $c->timers->{metric}{$stack} and exists $c->timers->{metric}{$stack}{$metric}) {
+		Mojo::IOLoop->remove($c->timers->{metric}{$stack}{$metric})
+	}
+	$c->timers->{metric}{$stack}{$metric} = Mojo::IOLoop->recurring(15 => sub {
+		$c->get_metric($metric, $stack => sub {
+			my $value = shift;
+			$c->app->log->debug("METRIC $metric: $value <" . ("-" x 30));
+			$c->ee->emit("metric $metric", $value);
+		});
+	});
+};
+
+helper get_metric => sub {
+	my $c		= shift;
+	my $metric	= shift;
+	my $stack	= shift;
+	my $cb		= shift;
+
+	$c->influxdb_query("select mean(load) from cpu_load where time > now() - 15s group by time(15s) fill(none)" => sub {
+		my $data = shift;
+		$c->app->log->debug("DATA <" . ("-" x 60), $c->app->dumper($data));
+		$cb->($data);
 	});
 };
 
@@ -209,7 +279,7 @@ helper max_scale => sub {
 	my $c		= shift;
 	my $stack	= shift;
 	my $col		= $c->db->get_collection("stacks");
-	my $scale	= $c->get_scale_data($stack);
+	my $scale	= $c->get_data($stack, "scale");
 
 	my %max = map {($_ => $scale->{$_}{max})} keys %$scale;
 	$c->app->log->debug("max:", $c->app->dumper(\%max));
@@ -220,7 +290,7 @@ helper min_scale => sub {
 	my $c		= shift;
 	my $stack	= shift;
 	my $col		= $c->db->get_collection("stacks");
-	my $scale	= $c->get_scale_data($stack);
+	my $scale	= $c->get_data($stack, "scale");
 
 	my %min = map {($_ => $scale->{$_}{min})} keys %$scale;
 	$c->app->log->debug("min:", $c->app->dumper(\%min));
@@ -231,7 +301,7 @@ helper initial_scale => sub {
 	my $c		= shift;
 	my $stack	= shift;
 	my $col		= $c->db->get_collection("stacks");
-	my $scale	= $c->get_scale_data($stack);
+	my $scale	= $c->get_data($stack, "scale");
 
 	my %initial = map {($_ => $scale->{$_}{initial})} keys %$scale;
 	$c->app->log->debug("initail:", $c->app->dumper(\%initial));
@@ -269,7 +339,7 @@ del "/:stack" => sub {
 	my $c	= shift;
 	my $stack = $c->param("stack");
 	$c->del_stack($stack => sub {
-		Mojo::IOLoop->remove($c->timers->{$stack});
+		Mojo::IOLoop->remove($c->timers->{stack}{$stack});
 		my $col = $c->db->get_collection("stacks");
 		my ($conf) = $col->delete_many({ _id => $stack });
 		$c->render(json => $conf->deleted_count)

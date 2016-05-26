@@ -22,4 +22,11 @@ services:
   mongo:
     image: mongo
   influxdb:
-    image: influxdb
+    image: tutum/influxdb:latest
+    ports:
+      - 8083
+      - 8086
+    environment:
+      ADMIN_USER: root
+      INFLUXDB_INIT_PWD: 12345
+      PRE_CREATE_DB: fodocker
