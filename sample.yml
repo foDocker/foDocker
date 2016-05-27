@@ -15,11 +15,19 @@ services:
       initial: 5
   inserter:
     image: ubuntu
-    command: bash -c 'while sleep 5; do curl -i -XPOST "http://localhost:8086/write?db=fodocker" --data-binary "metric1,service=test1 value=70"; done'
+    command: bash -c 'while sleep 5; do curl -i -XPOST "http://influxdb:8086/write?db=fodocker" --data-binary "metric1,service=test1 value=75"; done'
+    networks:
+      - default
+      - fodocker
 metrics:
   - metric1
   - metric2
 alerts:
-  metric1: "<70"
+  alert1:
+    metric1: ">70"
+networks:
+  fodocker:
+    external:
+      name: fodocker_network
 
 #curl -XPOST -F 'file=@sample.yml' watcher:3000/test

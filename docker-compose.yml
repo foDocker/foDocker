@@ -14,7 +14,7 @@ services:
       - 3000
     restart: always
     environment:
-      MOJO_EVENTEMITTER_DEBUG: 1
+      MOJO_EVENTEMITTER_DEBUG: 0
     command: perl watcher.pl daemon
     depends_on:
       - composeapi
@@ -24,9 +24,13 @@ services:
   influxdb:
     image: tutum/influxdb:latest
     ports:
-      - 8083
-      - 8086
+      - 8083:8083
+      - 8086:8086
     environment:
       ADMIN_USER: root
       INFLUXDB_INIT_PWD: 12345
       PRE_CREATE_DB: fodocker
+  graphana:
+    image: grafana/grafana
+    ports:
+      - 8082:3000

@@ -3,6 +3,7 @@ use Mojolicious::Lite;
 use Mojo::JSON qw/from_json/;
 use Mojo::EventEmitter;
 use Mojo::UserAgent;
+use Mojo::Util qw/url_escape/;
 use MongoDB;
 use YAML;
 
@@ -139,16 +140,25 @@ helper influxdb_query => sub {
 	my $c		= shift;
 	my $query	= shift;
 	my $cb		= shift;
-	$c->ua->get("http://influxdb:8086/query" => form => {db => "metrics", q => $query} => sub {
-		$c->app->log->debug("response from influxdb");
+	$c->app->log->debug("QUERY: $query");
+	$c->ua->get("http://influxdb:8086/query?db=fodocker&q=" . url_escape($query) => sub {
 		my $ua	= shift;
 		my $tx	= shift;
 
 		if(my $res = $tx->success) {
-			$c->app->log->debug("response from influxdb:", $c->app->dumper($res->json("//values")));
-			$cb->($res->json("//values"))
+			my @objs;
+			if($res->json("/results/0/series/0/columns")) {
+				my @columns = @{ $res->json("/results/0/series/0/columns") };
+				for my $values(@{ $res->json("/results/0/series/0/values") }) {
+					my %tmp;
+					@tmp{@columns} = @{ $values };
+					push @objs, \%tmp
+				}
+				$c->app->log->debug("response from influxdb:", $c->app->dumper($objs[1]{value}));
+			}
+			$cb->(@objs)
 		} else {
-			$c->app->log->error("response from influxdb:", $tx->error->{message});
+			$c->app->log->error("influxdb error:", $tx->error->{message});
 			die $tx->error->{message}
 		}
 	});
@@ -195,6 +205,26 @@ helper run_stack => sub {
 		if($alerts) {
 			for my $alert(keys %$alerts) {
 				$c->app->log->debug("alert: $alert");
+				for my $metric(keys %{ $alerts->{$alert} }) {
+					my ($op, $val) = split /\s*\b\s*/, $alerts->{$alert}{$metric};
+					$c->ee->on("metric $metric" => sub {
+						$c->app->log->debug(("-" x 60) . "testing alert: $alert");
+						my $ee		= shift;
+						my $value	= shift;
+
+						my $cmp = {
+							">"	=> sub {shift() >  shift()},
+							"<"	=> sub {shift() <  shift()},
+							"=="	=> sub {shift() == shift()},
+							"!="	=> sub {shift() != shift()},
+						};
+
+						if($cmp->{$op}->($value, $val)) {
+							$c->app->log->debug("emit alert $alert");
+							$c->ee->emit("alert $alert")
+						}
+					})
+				}
 			}
 		}
 
@@ -229,9 +259,8 @@ helper get_metric => sub {
 	my $stack	= shift;
 	my $cb		= shift;
 
-	$c->influxdb_query("select mean(load) from cpu_load where time > now() - 15s group by time(15s) fill(none)" => sub {
+	$c->influxdb_query(qq{select mean("value") from "$metric" where time > now() - 15s group by time(15s) fill(none)} => sub {
 		my $data = shift;
-		$c->app->log->debug("DATA <" . ("-" x 60), $c->app->dumper($data));
 		$cb->($data);
 	});
 };
