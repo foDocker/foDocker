@@ -156,11 +156,116 @@ helper influxdb_query => sub {
 				}
 				$c->app->log->debug("response from influxdb:", $c->app->dumper($objs[1]{value}));
 			}
+			$c->app->log->debug(("-" x 90) . "> value:", $c->app->dumper(@objs));
 			$cb->(@objs)
 		} else {
 			$c->app->log->error("influxdb error:", $tx->error->{message});
 			die $tx->error->{message}
 		}
+	});
+};
+
+helper comparations => sub {
+	state $cmp ||= {
+		"=="		=> sub {shift() == shift()},
+		"!="		=> sub {shift() != shift()},
+		">"		=> sub {shift() >  shift()},
+		"<"		=> sub {shift() <  shift()},
+		">="		=> sub {shift() >= shift()},
+		"<="		=> sub {shift() <= shift()},
+		"=~"		=> sub {
+			my $val = shift;
+			my $match = shift;
+			$val =~ /$match/
+		},
+		"!~"		=> sub {
+			my $val = shift;
+			my $match = shift;
+			$val !~ /$match/
+		},
+		"between"	=> sub {
+			my $val = shift;
+			my ($min, $max) = split /\s+/, shift;
+			$min < $val && $val < $max
+		},
+		"not\\s+between"	=> sub {
+			my $val = shift;
+			my ($min, $max) = split /\s+/, shift;
+			$min > $val || $val > $max
+		},
+	};
+
+};
+
+helper create_metrics => sub {
+	my $c		= shift;
+	my $stack	= shift;
+
+	my $metrics = $c->get_data($stack, "metrics");
+	if($metrics) {
+		for my $metric(keys %$metrics) {
+			$c->recurring_metric($stack, $metric, $metrics->{$metric})
+		}
+	}
+};
+
+helper create_alerts => sub {
+	my $c		= shift;
+	my $stack	= shift;
+
+	my $alerts = $c->get_data($stack, "alerts");
+	if($alerts) {
+		for my $alert(keys %$alerts) {
+			$c->app->log->debug("alert: $alert");
+			for my $metric(keys %{ $alerts->{$alert} }) {
+				my $ops = join "|", keys %{ $c->comparations };
+				my ($op, $val) = ($1, $2) if $alerts->{$alert}{$metric} =~ /^\s*($ops)\s*(.*?)$/i;
+				die "Not a valid constraint: $metric: $alerts->{$alert}{$metric}" unless defined $op and defined $val;
+				$c->ee->on("metric $metric" => sub {
+					$c->app->log->debug(("-" x 60) . "testing alert: $alert");
+					my $ee		= shift;
+					my $value	= shift;
+
+					$c->app->log->info("\$c->comparations->{$op}->($value, $val)");
+					if($c->comparations->{$op}->($value, $val)) {
+						$c->app->log->debug("emit alert $alert");
+						$c->ee->emit("alert $alert")
+					}
+				})
+			}
+		}
+	}
+
+};
+
+helper create_fixer => sub {
+	my $c		= shift;
+	my $stack	= shift;
+
+	if(exists $c->timers->{stack}{$stack}) {
+		Mojo::IOLoop->remove($c->timers->{stack}{$stack})
+	}
+
+	$c->timers->{stack}{$stack} = Mojo::IOLoop->recurring(15 => sub {
+		$c->fix_instances($stack);
+	});
+};
+
+helper scale_stack => sub {
+	my $c		= shift;
+	$c->app->log->debug("scale_stack(@_)");
+	my $stack	= shift;
+	my $scale	= shift;
+	my $cb		= shift;
+
+	$c->ua->post("http://composeapi:3000/$stack/run" => json => $scale => sub {
+		my $ua	= shift;
+		my $tx	= shift;
+		if($tx->error) {
+			$c->app->log->error($tx->error->{message});
+			die $tx->error->{message}
+		}
+		$cb->($tx->res->json) if $cb
 	});
 };
 
@@ -177,59 +282,13 @@ helper run_stack => sub {
 		undef $cb
 	}
 
-	if(exists $c->timers->{stack}{$stack}) {
-		Mojo::IOLoop->remove($c->timers->{stack}{$stack})
-	}
+	$c->scale_stack($stack, $scale => sub {
+		my $response = shift;
+		$c->create_fixer($stack);
+		$c->create_metrics($stack);
+		$c->create_alerts($stack);
 
-	$c->app->log->debug("run scale:", $c->app->dumper($scale));
-	$c->ua->post("http://composeapi:3000/$stack/run" => json => $scale => sub {
-		my $ua	= shift;
-		my $tx	= shift;
-		if($tx->error) {
-			$c->app->log->error($tx->error->{message});
-			die $tx->error->{message}
-		}
-
-		$c->timers->{stack}{$stack} = Mojo::IOLoop->recurring(15 => sub {
-			$c->fix_instances($stack);
-		});
-
-		my $metrics = $c->get_data($stack, "metrics");
-		if($metrics) {
-			for my $metric(keys %$metrics) {
-				$c->recurring_metric($stack, $metric, $metrics->{$metric})
-			}
-		}
-
-		my $alerts = $c->get_data($stack, "alerts");
-		if($alerts) {
-			for my $alert(keys %$alerts) {
-				$c->app->log->debug("alert: $alert");
-				for my $metric(keys %{ $alerts->{$alert} }) {
-					my ($op, $val) = split /\s*\b\s*/, $alerts->{$alert}{$metric};
-					$c->ee->on("metric $metric" => sub {
-						$c->app->log->debug(("-" x 60) . "testing alert: $alert");
-						my $ee		= shift;
-						my $value	= shift;
-
-						my $cmp = {
-							">"	=> sub {shift() >  shift()},
-							"<"	=> sub {shift() <  shift()},
-							"=="	=> sub {shift() == shift()},
-							"!="	=> sub {shift() != shift()},
-						};
-
-						if($cmp->{$op}->($value, $val)) {
-							$c->app->log->debug("emit alert $alert");
-							$c->ee->emit("alert $alert")
-						}
-					})
-				}
-			}
-		}
-
-		$c->app->log->debug($c->app->dumper($tx->res->json));
-		$cb->($tx->res->json) if $cb
+		$cb->($response) if $cb
 	});
 };
 
@@ -260,8 +319,9 @@ helper get_metric => sub {
 	my $cb		= shift;
 
 	$c->influxdb_query(qq{select mean("value") from "$metric" where time > now() - 15s group by time(15s) fill(none)} => sub {
-		my $data = shift;
-		$cb->($data);
+		$c->app->log->debug(("-" x 90) . "value:", $c->app->dumper(@_));
+		my $data = pop;
+		$cb->($data->{mean});
 	});
 };
 
@@ -283,7 +343,7 @@ helper fix_instances => sub {
 			}
 		}
 
-		$c->run_stack($stack => $scale);
+		$c->scale_stack($stack => $scale);
 	});
 };
 
