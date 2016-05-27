@@ -238,6 +238,25 @@ helper create_alerts => sub {
 
 };
 
+helper create_autoscale => sub {
+	my $c		= shift;
+	my $stack	= shift;
+
+	my $scale = $c->get_data($stack, "scale");
+	if($scale) {
+		for my $service(keys %{ $scale }) {
+			if(exists $scale->{$service}->{on_alert}) {
+				my $on_alert = $scale->{$service}->{on_alert};
+				for my $alert(keys %{ $on_alert }) {
+					$c->ee->on("alert $alert" => sub {
+						$c->scale_stack($stack, {$service => $on_alert->{$alert}});
+					});
+				}
+			}
+		}
+	}
+};
+
 helper create_fixer => sub {
 	my $c		= shift;
 	my $stack	= shift;
@@ -284,6 +303,7 @@ helper run_stack => sub {
 
 	$c->scale_stack($stack, $scale => sub {
 		my $response = shift;
+		$c->create_autoscale($stack);
 		$c->create_fixer($stack);
 		$c->create_metrics($stack);
 		$c->create_alerts($stack);

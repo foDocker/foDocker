@@ -6,6 +6,8 @@ services:
     scaling:
       min: 3
       max: 10
+      on_alert:
+        alert1: +2
   test2:
     image: ubuntu
     command: bash -c "while sleep 1; do sleep 1; done"
