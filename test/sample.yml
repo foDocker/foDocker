@@ -1,0 +1,38 @@
+version: '2'
+services:
+  test1:
+    image: sample
+    command: ./nothing.sh
+    scaling:
+      min: 3
+      max: 10
+      on_alert:
+        alert1: +2
+        alert2: -2
+  test2:
+    image: sample
+    command: ./nothing.sh
+    scaling:
+      min: 3
+      max: 10
+      initial: 5
+  inserter:
+    image: sample
+    command: ./writer.sh
+    networks:
+      - default
+      - fodocker
+metrics:
+  - metric1
+  - metric2
+alerts:
+  alert1:
+    metric1: ">70"
+  alert2:
+    metric1: "<30"
+networks:
+  fodocker:
+    external:
+      name: test_default
+
+#curl -XPOST -F 'file=@sample.yml' watcher:3000/test

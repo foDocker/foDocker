@@ -9,6 +9,8 @@ use YAML;
 
 helper ua => sub {
 	state $ua ||= Mojo::UserAgent->new;
+	$ua->inactivity_timeout(300);
+	$ua
 };
 
 helper mongo => sub {
@@ -154,7 +156,7 @@ helper influxdb_query => sub {
 					@tmp{@columns} = @{ $values };
 					push @objs, \%tmp
 				}
-				$c->app->log->debug("response from influxdb:", $c->app->dumper($objs[1]{value}));
+				$c->app->log->debug("response from influxdb:", $c->app->dumper((grep {keys %$_ >= 1} @objs)[-1]{value}));
 			}
 			$c->app->log->debug(("-" x 90) . "> value:", $c->app->dumper(@objs));
 			$cb->(@objs)
@@ -301,15 +303,11 @@ helper run_stack => sub {
 		undef $cb
 	}
 
-	$c->scale_stack($stack, $scale => sub {
-		my $response = shift;
-		$c->create_autoscale($stack);
-		$c->create_fixer($stack);
-		$c->create_metrics($stack);
-		$c->create_alerts($stack);
-
-		$cb->($response) if $cb
-	});
+	$c->create_autoscale($stack);
+	$c->create_fixer($stack);
+	$c->create_metrics($stack);
+	$c->create_alerts($stack);
+	$c->scale_stack($stack, $scale => $cb);
 };
 
 helper recurring_metric => sub {
