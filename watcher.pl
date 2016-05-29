@@ -297,6 +297,16 @@ helper scale_stack => sub {
 	my $stack	= shift;
 	my $scale	= shift;
 	my $cb		= shift;
+	my $min		= $c->min_scale($stack);
+	my $max		= $c->max_scale($stack);
+
+	for my $service(keys %$scale) {
+		if(exists $min->{$service} or exists $max->{$service}) {
+			$scale->{$service} = {value => $scale->{$service}}
+		}
+		$scale->{$service}{min} = $min->{$service} if exists $min->{$service};
+		$scale->{$service}{max} = $max->{$service} if exists $max->{$service};
+	}
 
 	$c->ua->post("http://composeapi:3000/$stack/run" => json => $scale => sub {
 		my $ua	= shift;

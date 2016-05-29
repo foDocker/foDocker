@@ -121,7 +121,14 @@ post '/:stack/run' => sub {
                 my @keys	= keys %$body;
 		my %scale	= $c->get_scales($stack);
                 my $scales	= join " ", map {
-			my $instances	= $body->{$_};
+			my($instances, $min, $max);
+			if(ref $body->{$_} eq "HASH") {
+				$instances	= $body->{$_}{value};
+				$min		= $body->{$_}{min};
+				$max		= $body->{$_}{max};
+			} else {
+				$instances = $body->{$_};
+			}
 			if($instances =~  /^\+(\d+)$/) {
 				$instances = $scale{$_} + $1;
 			} elsif($instances =~  /^-(\d+)$/) {
@@ -132,8 +139,10 @@ post '/:stack/run' => sub {
 				$instances = $scale{$_} / $1;
 			}
 			$instances = 0 if $instances < 0;
+			$instances = $min if $instances < $min;
+			$instances = $max if $instances > $max;
 			"$_=$instances"
-                } keys %$body;
+		} keys %$body;
 		system "cd ./$stack && docker-compose scale $scales 2>&1" || die $!;
 	}
 	$c->render(json => {$c->get_scales($stack)});
