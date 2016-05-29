@@ -138,6 +138,25 @@ helper ee => sub{
 	state $ee ||= Mojo::EventEmitter->new
 };
 
+helper influxdb_write => sub {
+	my $c		= shift;
+	my $metric	= shift;
+	my $tags	= shift;
+	my $values	= shift;
+	my $data = join(" ", join(",", $metric, map{"$_=$tags->{$_}"} keys %$tags), join ",", map{"$_=$values->{$_}"} keys %$values);
+	$c->app->log->debug(("=" x 30) . "> WRITE: http://influxdb:8086/write?db=fodocker" => $data);
+	$c->ua->post("http://influxdb:8086/write?db=fodocker" => $data => sub {
+		my $ua	= shift;
+		my $tx	= shift;
+
+		if(my $res = $tx->success) {
+			$c->app->log->debug("influxdb error:", $c->app->dumper($res->json));
+		} else {
+			$c->app->log->error("influxdb error:", $tx->error->{message});
+		}
+	});
+};
+
 helper influxdb_query => sub {
 	my $c		= shift;
 	my $query	= shift;
@@ -286,7 +305,11 @@ helper scale_stack => sub {
 			$c->app->log->error($tx->error->{message});
 			die $tx->error->{message}
 		}
-		$cb->($tx->res->json) if $cb
+		my $scale_res = $tx->res->json;
+		for my $service(keys %$scale_res) {
+			$c->influxdb_write("scale_stack", {stack => $stack, service => $service}, {value => $scale_res->{$service}});
+		}
+		$cb->($scale_res) if $cb
 	});
 };
 
@@ -302,6 +325,8 @@ helper run_stack => sub {
 		$scale = $cb;
 		undef $cb
 	}
+
+	$c->influxdb_write("start_stack", {stack => $stack}, {value => 1});
 
 	$c->create_autoscale($stack);
 	$c->create_fixer($stack);
