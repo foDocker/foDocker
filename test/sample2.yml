@@ -1,0 +1,42 @@
+stack_name: stack2
+version: '2'
+services:
+  test1:
+    image: sample
+    command: ./nothing.sh
+    scaling:
+      min: 3
+      max: 10
+      on_alert:
+        alert1: "*2"
+        alert2: "-1"
+  test2:
+    image: sample
+    command: ./nothing.sh
+    scaling:
+      min: 3
+      max: 10
+      initial: 5
+      on_alert:
+        alert3: "*2"
+        alert4: "-1"
+  #inserter:
+  #  image: sample
+  #  command: ./writer.sh
+  #  networks:
+  #    - default
+  #    - fodocker
+metrics:
+  - metric1
+  - metric2
+alerts:
+  alert3:
+    metric1: ">=50"
+  alert4:
+    metric1: "<=40"
+networks:
+  fodocker:
+    external:
+      name: test_default
+
+#curl -XPOST -F 'file=@sample.yml' watcher:3000/test

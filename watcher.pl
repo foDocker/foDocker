@@ -26,7 +26,7 @@ helper separe_file => sub {
 	my $c		= shift;
 	my $file	= Load(shift);
 
-	my(%scale, %alerts, %metrics);
+	my(%scale, %alerts, %metrics, $stack);
 	$c->app->log->debug($c->app->dumper($file));
 	if(exists $file->{services}) {
 		for my $service(keys %{ $file->{services} }) {
@@ -42,6 +42,9 @@ helper separe_file => sub {
 			;
 		}
 	}
+	if(exists $file->{stack_name}) {
+		$stack = delete $file->{stack_name}
+	}
 	if(exists $file->{alerts}) {
 		%alerts = %{ delete $file->{alerts} }
 	}
@@ -50,7 +53,7 @@ helper separe_file => sub {
 		%metrics = ref $metrics eq "ARRAY" ? map {($_ => 1)} @$metrics : %$metrics
 	}
 
-	{compose => $file, scale => \%scale, alerts => \%alerts, metrics => \%metrics}
+	{compose => $file, scale => \%scale, alerts => \%alerts, metrics => \%metrics, stack => $stack}
 };
 
 helper timers => sub {
@@ -239,7 +242,7 @@ helper create_alerts => sub {
 		for my $alert(keys %$alerts) {
 			$c->app->log->debug("alert: $alert");
 			for my $metric(keys %{ $alerts->{$alert} }) {
-				my $ops = join "|", keys %{ $c->comparations };
+				my $ops = join "|", sort {length $b <=> length $a} keys %{ $c->comparations };
 				my ($op, $val) = ($1, $2) if $alerts->{$alert}{$metric} =~ /^\s*($ops)\s*(.*?)$/i;
 				die "Not a valid constraint: $metric: $alerts->{$alert}{$metric}" unless defined $op and defined $val;
 				$c->ee->on("metric $metric" => sub {
@@ -249,8 +252,8 @@ helper create_alerts => sub {
 
 					$c->app->log->info("\$c->comparations->{$op}->($value, $val)");
 					if($c->comparations->{$op}->($value, $val)) {
-						$c->app->log->debug("emit alert $alert");
-						$c->ee->emit("alert $alert")
+						$c->app->log->debug("emit alert $stack $alert");
+						$c->ee->emit("alert $stack $alert")
 					}
 				})
 			}
@@ -269,7 +272,7 @@ helper create_autoscale => sub {
 			if(exists $scale->{$service}->{on_alert}) {
 				my $on_alert = $scale->{$service}->{on_alert};
 				for my $alert(keys %{ $on_alert }) {
-					$c->ee->on("alert $alert" => sub {
+					$c->ee->on("alert $stack $alert" => sub {
 						$c->scale_stack($stack, {$service => $on_alert->{$alert}});
 					});
 				}
@@ -450,12 +453,11 @@ helper initial_scale => sub {
 	\%initial
 };
 
-post "/:stack" => sub {
-	my $c	= shift;
-	die "no file" unless $c->param("file");
-	my $stack = $c->param("stack");
-	my $file = $c->param("file")->slurp;
-	my $data = $c->separe_file($file);
+helper create_and_run_stack => sub {
+	my $c		= shift;
+	my $stack	= shift;
+	my $data	= shift;
+
 	$c->app->log->debug($c->app->dumper($data));
 	my $col = $c->db->get_collection("stacks");
 	eval {$col->insert_one({ _id => $stack, %$data }) };
@@ -466,6 +468,25 @@ post "/:stack" => sub {
 			$c->render(json => {ok => \1, scales => $scales});
 		});
 	});
+};
+
+post "/" => sub {
+	my $c	= shift;
+	die "no file" unless $c->param("file");
+	my $file = $c->param("file")->slurp;
+	my $data = $c->separe_file($file);
+	die unless exists $data->{stack};
+	$c->create_and_run_stack($data->{stack}, $data);
+	$c->render_later
+};
+
+post "/:stack" => sub {
+	my $c	= shift;
+	die "no file" unless $c->param("file");
+	my $stack = $c->param("stack");
+	my $file = $c->param("file")->slurp;
+	my $data = $c->separe_file($file);
+	$c->create_and_run_stack($stack, $data);
 	$c->render_later
 };
 
