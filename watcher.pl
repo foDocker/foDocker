@@ -3,6 +3,7 @@ use Mojolicious::Lite;
 use Mojo::JSON qw/from_json/;
 use Mojo::EventEmitter;
 use Mojo::UserAgent;
+use File::Path qw/rmtree/;
 use Mojo::Util qw/url_escape/;
 use MongoDB;
 use YAML;
@@ -90,23 +91,49 @@ helper get_data => sub {
 	$data
 };
 
-helper create_stack => sub {
+helper call_compose_to_create_stack => sub {
 	my $c		= shift;
 	my $stack	= shift;
+	my $compose	= shift;
 	my $cb		= shift;
 
-	my $compose = $c->get_data($stack, "compose");
-	$c->app->log->debug("compose yml:", $c->app->dumper($compose));
 	$c->ua->post("http://composeapi:3000/$stack" => json => $compose => sub {
 		my $ua	= shift;
 		my $tx	= shift;
-		if($tx->error or !$tx->res->json->{ok}) {
+		if($tx->error or not $tx->res->json->{ok}) {
 			$c->app->log->error($tx->error->{message});
 			die  $tx->error->{message}
 		}
 		$c->app->log->debug($c->app->dumper($tx->res->json));
 		$cb->($tx->res->json);
 	});
+};
+
+helper create_stack => sub {
+	my $c		= shift;
+	my $stack	= shift;
+	my $cb		= shift;
+
+	my $compose = $c->get_data($stack, "compose");
+	my $git = $c->get_data($stack, "git");
+	$c->app->log->debug("git: $git");
+	$c->app->log->debug("compose yml:", $c->app->dumper($compose));
+	# test git
+	my $url;
+	if(not defined $git) {
+		$c->call_compose_to_create_stack($stack, $compose, $cb)
+	} else {
+		$c->ua->post("http://composeapi:3000/$stack/git" => form => {git => $git} => sub {
+			my $ua	= shift;
+			my $tx	= shift;
+			if($tx->error or not $tx->res->json->{ok}) {
+				$c->app->log->error($tx->error->{message});
+				die  $tx->error->{message}
+			}
+			$c->app->log->debug($c->app->dumper($tx->res->json));
+			$c->call_compose_to_create_stack($stack, $compose, $cb);
+		});
+	}
 };
 
 helper del_stack => sub {
@@ -470,12 +497,32 @@ helper create_and_run_stack => sub {
 	});
 };
 
+helper get_from_file_or_git => sub {
+	my $c		= shift;
+	my $file	= $c->param("file") || "./fodocker.yml";
+	my $git		= $c->param("git");
+	my $data;
+	die "no file" unless defined $c->param("file") or defined $git;
+	if(not defined $git) {
+		$file	= $c->param("file")->slurp;
+		$data	= $c->separe_file($file);
+	} else {
+		system "git clone -n $git --depth 1 /tmp/tmp_repo && cd /tmp/tmp_repo && git checkout HEAD $file";
+		open my $FILE, "<", "/tmp/tmp_repo/$file" || die $!;
+		$file = join "", <$FILE>;
+		$c->app->log->debug("FILE => $file");
+		rmtree "/tmp/tmp_repo";
+		$data = $c->separe_file($file);
+		$data->{git} = $git;
+		$c->app->log->debug("DATA => ", $c->app->dumper($data))
+	}
+	$data
+};
+
 post "/" => sub {
 	my $c	= shift;
-	die "no file" unless $c->param("file");
-	my $file = $c->param("file")->slurp;
-	my $data = $c->separe_file($file);
-	die unless exists $data->{stack};
+	my $data = $c->get_from_file_or_git;
+	die "no stack name defined" unless exists $data->{stack};
 	$c->create_and_run_stack($data->{stack}, $data);
 	$c->render_later
 };
@@ -484,8 +531,7 @@ post "/:stack" => sub {
 	my $c	= shift;
 	die "no file" unless $c->param("file");
 	my $stack = $c->param("stack");
-	my $file = $c->param("file")->slurp;
-	my $data = $c->separe_file($file);
+	my $data = $c->get_from_file_or_git;
 	$c->create_and_run_stack($stack, $data);
 	$c->render_later
 };
