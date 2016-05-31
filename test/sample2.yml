@@ -8,8 +8,8 @@ services:
       min: 3
       max: 10
       on_alert:
-        alert1: "*2"
-        alert2: "-1"
+        alert3: "*2"
+        alert4: "-1"
   test2:
     image: sample
     command: ./nothing.sh

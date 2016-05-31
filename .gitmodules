@@ -1,0 +1,6 @@
+[submodule "foDocker-compose-api"]
+	path = foDocker-compose-api
+	url = https://github.com/foDocker/foDocker-compose-api.git
+[submodule "foDocker-watcher"]
+	path = foDocker-watcher
+	url = https://github.com/foDocker/foDocker-watcher.git

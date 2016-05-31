@@ -1,7 +1,7 @@
 version: '2'
 services:
   composeapi:
-    build: ..
+    build: ../foDocker-compose-api
     volumes:
       - '/var/run/docker.sock:/var/run/docker.sock:ro'
     ports:
@@ -9,7 +9,7 @@ services:
     restart: always
     command: perl compose_api.pl daemon
   watcher:
-    build: ..
+    build: ../foDocker-watcher
     ports:
       - 3000
     restart: always
