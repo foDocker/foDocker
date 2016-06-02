@@ -20,19 +20,17 @@ services:
       on_alert:
         alert3: "*2"
         alert4: "-1"
-  #inserter:
-  #  image: sample
-  #  command: ./writer.sh
-  #  networks:
-  #    - default
-  #    - fodocker
 metrics:
   - metric1
-  - metric2
+  - name: metric2
+    tags:
+      test: 1
+      bla: 2
+    measurement: test_measurement
 alerts:
-  alert3:
+  alert1:
     metric1: ">=50"
-  alert4:
+  alert2:
     metric1: "<=40"
 networks:
   fodocker:

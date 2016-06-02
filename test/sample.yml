@@ -22,9 +22,6 @@ services:
     networks:
       - default
       - fodocker
-metrics:
-  - metric1
-  - metric2
 alerts:
   alert1:
     metric1: ">70"
